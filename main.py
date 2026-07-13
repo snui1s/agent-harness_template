@@ -8,6 +8,7 @@ import yfinance as yf
 from src.agent.tools import *
 from src.agent.memory import compact_memory
 import platform
+from src.agent import db
 
 # Resolve script directory for absolute path references
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -38,7 +39,7 @@ conversation_history = []
 
 # --- Persona Setup ---
 
-SYSTEM_PROMPT = f"""You are an intelligent, highly pragmatic AI assistant with broad general knowledge and advanced workspace file management capabilities.
+BASE_SYSTEM_PROMPT = f"""You are an intelligent, highly pragmatic AI assistant with broad general knowledge and advanced workspace file management capabilities.
 
 CRITICAL OPERATIONAL GUIDELINES:
 1. TOOL USAGE: Call tools ONLY when strictly necessary. Answer general knowledge, philosophy, or history questions directly using your own internal knowledge without relying on tools.
@@ -47,13 +48,63 @@ CRITICAL OPERATIONAL GUIDELINES:
 4. TARGETED MODIFICATIONS: When asked to modify a specific function, variable, or block of code within an existing file, prefer using 'replace_in_file' over 'edit_local_file' to avoid accidentally destroying other parts of the file.
 5. CONCISE COMPLETION: Avoid multi-step verification loops. Execute the requested action, review the output from the tool, and provide your final response directly to the user.
 6. GIT COMMIT & PUSH: When the user asks to commit and/or push changes, use the 'git_commit_and_push' tool directly - do NOT run 'git add', 'git commit', 'git push' one by one via 'execute_shell_command'. Only use 'execute_shell_command' with 'git status' or 'git diff' first if you genuinely need to inspect changes before deciding on a commit message.
+7. WEB SEARCH: Use 'web_search' only when the question involves current events, recent releases, real-time data (prices, weather, news), or facts you're not confident about due to your knowledge cutoff. Do NOT use it for general knowledge, well-established facts, or coding/logic questions you can answer directly.
 NOTE: This system runs on {platform.system()} ({os.name}). Use {platform.system()}-appropriate shell syntax."""
-# Initialize the conversation state with the system persona
-conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-print("=== Agent Harness Started (Compaction, Offloading & Tools) ===")
+
+def build_system_prompt():
+    """Append any long-term memory facts on top of the base persona prompt."""
+    facts = db.load_all_memory()
+    if not facts:
+        return BASE_SYSTEM_PROMPT
+    memory_block = "\n\nLONG-TERM MEMORY (facts learned about the user from past conversations):\n"
+    memory_block += "\n".join(f"- {fact}" for fact in facts)
+    return BASE_SYSTEM_PROMPT + memory_block
+
+
+def select_session():
+    """Show existing chat sessions and let the user resume one or start a new one.
+    Returns (session_id, conversation_history)."""
+    sessions = db.list_sessions()
+
+    if sessions:
+        print("=== Existing Chat Sessions ===")
+        for s in sessions:
+            print(f"  [{s['id']}] {s['title']}  (last updated: {s['updated_at']})")
+        print("Type a session ID to resume it, or '/new <title>' to start a new chat.\n")
+    else:
+        print("No existing sessions yet. Start one with '/new <title>'.\n")
+
+    while True:
+        choice = input("Session: ").strip()
+
+        if choice.lower().startswith("/new"):
+            title = choice[4:].strip() or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            new_id = db.create_session(title)
+            print(f"Created new session [{new_id}] '{title}'\n")
+            history = [{"role": "system", "content": build_system_prompt()}]
+            return new_id, history
+
+        elif choice.isdigit() and db.session_exists(int(choice)):
+            sid = int(choice)
+            history = db.load_messages(sid)
+            if not history or history[0].get("role") != "system":
+                history = [{"role": "system", "content": build_system_prompt()}] + history
+            print(f"Resumed session [{sid}] with {len(history)} message(s).\n")
+            return sid, history
+
+        else:
+            print("Invalid input. Type a valid session ID or '/new <title>'.")
+
+
+init_db_result = db.init_db()
+current_session_id, conversation_history = select_session()
+SYSTEM_PROMPT = conversation_history[0]["content"]
+
+print("=== Agent Harness Started (Sessions, Compaction, Offloading & Tools) ===")
+print(f"Current session: [{current_session_id}]")
 print(f"Offloaded data will be saved to: {OFFLOAD_FILE}")
-print("Type 'exit' or 'quit' to terminate the session.\n")
+print("Commands: '/new <title>' new chat | '/sessions' list chats | '/switch <id>' change chat | 'exit'/'quit' to leave.\n")
 
 # --- Main Conversation Loop ---
 
@@ -69,8 +120,41 @@ while True:
     if not user_input.strip():
         continue
 
+    # --- Slash commands for session management ---
+    if user_input.lower() == "/sessions":
+        for s in db.list_sessions():
+            marker = " (current)" if s["id"] == current_session_id else ""
+            print(f"  [{s['id']}] {s['title']}  (last updated: {s['updated_at']}){marker}")
+        print()
+        continue
+
+    if user_input.lower().startswith("/new"):
+        title = user_input[4:].strip() or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        current_session_id = db.create_session(title)
+        SYSTEM_PROMPT = build_system_prompt()
+        conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+        print(f"Switched to new session [{current_session_id}] '{title}'\n")
+        continue
+
+    if user_input.lower().startswith("/switch"):
+        target = user_input[7:].strip()
+        if target.isdigit() and db.session_exists(int(target)):
+            current_session_id = int(target)
+            loaded = db.load_messages(current_session_id)
+            SYSTEM_PROMPT = build_system_prompt()
+            if not loaded or loaded[0].get("role") != "system":
+                loaded = [{"role": "system", "content": SYSTEM_PROMPT}] + loaded
+            else:
+                loaded[0]["content"] = SYSTEM_PROMPT
+            conversation_history = loaded
+            print(f"Switched to session [{current_session_id}] with {len(conversation_history)} message(s)\n")
+        else:
+            print(f"Session '{target}' not found. Use '/sessions' to see available chats.\n")
+        continue
+
     # State Update: Append the new user message to the active conversation history
     conversation_history.append({"role": "user", "content": user_input})
+    db.save_message(current_session_id, "user", user_input)
 
     # --- State: Memory Compaction & Offloading Logic ---
     conversation_history = compact_memory(
@@ -79,13 +163,14 @@ while True:
         KEEP_RECENT,
         OFFLOAD_FILE,
         MODEL_NAME,
-        SYSTEM_PROMPT
+        SYSTEM_PROMPT,
+        session_id=current_session_id
     )
 
     # --- State: Main Agent Call Loop (with Retries, Tools, and Safeguards) ---
     attempt = 0
     tool_call_count = 0       
-    MAX_TOOL_CALLS = 5
+    MAX_TOOL_CALLS = 10
     
     # Take a backup snapshot of conversation history before starting thinking to allow clean recovery on errors
     safe_history_backup = list(conversation_history) 
@@ -242,6 +327,13 @@ while True:
                                     tool_result = "User declined to commit/push."
                                     print("  [System]: Commit/push declined by user.")
 
+                        elif func_name == "web_search":
+                            query = args.get("query", "")
+                            max_results = args.get("max_results", 5)
+                            tool_result = web_search(query, max_results)
+                            tool_end_time = time.time()
+                            print(f"  [Tool]: web_search('{query}') => [Found {len(str(tool_result))} chars] (took {tool_end_time - tool_start_time:.2f}s)")
+                            
                         conversation_history.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
@@ -255,6 +347,7 @@ while True:
                     answer = message.content
                     print(f"\nAgent (took {agent_duration:.2f}s): {answer}\n")
                     conversation_history.append({"role": "assistant", "content": answer})
+                    db.save_message(current_session_id, "assistant", answer)
                     break 
                 
         except Exception as e:

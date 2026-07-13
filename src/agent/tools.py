@@ -4,9 +4,25 @@ import shlex
 from datetime import datetime
 from openrouter import OpenRouter
 import yfinance as yf
+import requests
+
+# Load environment variables from local .env file (checking CWD first, then climbing up from script location)
+env_path = ".env"
+if not os.path.exists(env_path):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.abspath(os.path.join(script_dir, "..", "..", ".env"))
+
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip()
 
 # --- Helper Functions (Tools) ---
 MODEL_NAME = "openrouter/free"
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 def get_current_time():
     """
     Function: Retrieves the current system date and time formatted as a string.
@@ -498,6 +514,36 @@ def git_commit_and_push(commit_message, confirmed=False):
     except Exception as e:
         return f"Error during git commit/push: {str(e)}"
 
+def web_search(query, max_results=5):
+    """Search the web for current information."""
+    if not TAVILY_API_KEY:
+        return "Error: TAVILY_API_KEY not set in .env"
+    
+    try:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "max_results": max_results
+            },
+            timeout=10
+        )
+        data = response.json()
+        
+        results = []
+        for r in data.get("results", []):
+            results.append(f"- {r['title']}: {r['content'][:200]}... (Source: {r['url']})")
+        
+        if not results:
+            return f"No results found for '{query}'."
+        
+        return f"Search results for '{query}':\n" + "\n".join(results)
+        
+    except requests.exceptions.Timeout:
+        return "Error: Search request timed out."
+    except Exception as e:
+        return f"Error searching web: {str(e)}"
 
 
 # --- Tool Definitions ---
@@ -757,5 +803,27 @@ my_tools = [
                 "required": ["commit_message"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current, up-to-date, or real-time information (news, recent events, prices, documentation, facts you're unsure about, or anything that may have changed after your training data). Use this whenever the user asks about something time-sensitive or when you're not confident your internal knowledge is current.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query. Be specific and concise (e.g. 'Python 3.13 release date' rather than a full sentence question)."
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of search results to return. Default is 5."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
     }
+
 ]
