@@ -7,6 +7,7 @@ from datetime import datetime
 import yfinance as yf
 from src.agent.tools import *
 from src.agent.memory import compact_memory
+import platform
 
 # Resolve script directory for absolute path references
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -37,14 +38,16 @@ conversation_history = []
 
 # --- Persona Setup ---
 
-SYSTEM_PROMPT = """You are an intelligent, highly pragmatic AI assistant with broad general knowledge and advanced workspace file management capabilities.
+SYSTEM_PROMPT = f"""You are an intelligent, highly pragmatic AI assistant with broad general knowledge and advanced workspace file management capabilities.
 
 CRITICAL OPERATIONAL GUIDELINES:
 1. TOOL USAGE: Call tools ONLY when strictly necessary. Answer general knowledge, philosophy, or history questions directly using your own internal knowledge without relying on tools.
 2. FILE EDITING & TRUST: When you use the 'edit_local_file' or 'replace_in_file' tools to modify content, trust the success message returned by the tool. DO NOT call 'read_local_file', 'view_file_lines', or 'list_directory' immediately afterward to verify your action. Once the tool returns a success status, consider the task complete and reply to the user immediately.
 3. SMART FILE INSPECTION: When dealing with large files, prefer using 'get_file_info' first to check the size, or 'view_file_lines' to read specific portions instead of reading the entire file, to keep latency low and save token usage.
 4. TARGETED MODIFICATIONS: When asked to modify a specific function, variable, or block of code within an existing file, prefer using 'replace_in_file' over 'edit_local_file' to avoid accidentally destroying other parts of the file.
-5. CONCISE COMPLETION: Avoid multi-step verification loops. Execute the requested action, review the output from the tool, and provide your final response directly to the user."""
+5. CONCISE COMPLETION: Avoid multi-step verification loops. Execute the requested action, review the output from the tool, and provide your final response directly to the user.
+6. GIT COMMIT & PUSH: When the user asks to commit and/or push changes, use the 'git_commit_and_push' tool directly - do NOT run 'git add', 'git commit', 'git push' one by one via 'execute_shell_command'. Only use 'execute_shell_command' with 'git status' or 'git diff' first if you genuinely need to inspect changes before deciding on a commit message.
+NOTE: This system runs on {platform.system()} ({os.name}). Use {platform.system()}-appropriate shell syntax."""
 # Initialize the conversation state with the system persona
 conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -82,7 +85,7 @@ while True:
     # --- State: Main Agent Call Loop (with Retries, Tools, and Safeguards) ---
     attempt = 0
     tool_call_count = 0       
-    MAX_TOOL_CALLS = 10
+    MAX_TOOL_CALLS = 5
     
     # Take a backup snapshot of conversation history before starting thinking to allow clean recovery on errors
     safe_history_backup = list(conversation_history) 
@@ -116,7 +119,7 @@ while True:
                         break
                         
                     print(f"  [System]: Agent decided to use a tool (took {agent_duration:.2f}s)")
-                    tool_call_count += 1
+                    tool_call_count += len(message.tool_calls)
                     
                     conversation_history.append(message.model_dump(exclude_none=True))
                     
@@ -222,6 +225,22 @@ while True:
                                 else:
                                     tool_result = "User declined to run this command."
                                     print("  [System]: Command declined by user.")
+
+                        elif func_name == "git_commit_and_push":
+                            commit_msg = args.get("commit_message", "")
+                            # Same rule as execute_shell_command - the model cannot self-confirm.
+                            tool_result = git_commit_and_push(commit_msg, confirmed=False)
+                            tool_end_time = time.time()
+                            print(f"  [Tool]: git_commit_and_push('{commit_msg}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+
+                            if isinstance(tool_result, str) and tool_result.startswith("CONFIRMATION_REQUIRED"):
+                                confirm_input = input(f"  [Confirm]: Allow commit & push? (y/n): ").strip().lower()
+                                if confirm_input == "y":
+                                    tool_result = git_commit_and_push(commit_msg, confirmed=True)
+                                    print(f"  [Tool]: git_commit_and_push('{commit_msg}', confirmed) => {tool_result}")
+                                else:
+                                    tool_result = "User declined to commit/push."
+                                    print("  [System]: Commit/push declined by user.")
 
                         conversation_history.append({
                             "role": "tool",

@@ -416,6 +416,8 @@ def execute_shell_command(command, confirmed=False):
             cwd=base_dir,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=SHELL_TIMEOUT_SECONDS
         )
 
@@ -458,7 +460,8 @@ def git_commit_and_push(commit_message, confirmed=False):
         # 1. Stage all changes
         r1 = subprocess.run(
             ['git', 'add', '-A'],
-            cwd=base_dir, capture_output=True, text=True, timeout=SHELL_TIMEOUT_SECONDS
+            cwd=base_dir, capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=SHELL_TIMEOUT_SECONDS
         )
         if r1.returncode != 0:
             return f"Failed at 'git add -A':\n{r1.stderr[:SHELL_OUTPUT_LIMIT]}"
@@ -466,7 +469,8 @@ def git_commit_and_push(commit_message, confirmed=False):
         # 2. Commit
         r2 = subprocess.run(
             ['git', 'commit', '-m', commit_message],
-            cwd=base_dir, capture_output=True, text=True, timeout=SHELL_TIMEOUT_SECONDS
+            cwd=base_dir, capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=SHELL_TIMEOUT_SECONDS
         )
         if r2.returncode != 0:
             if "nothing to commit" in r2.stdout.lower():
@@ -476,7 +480,8 @@ def git_commit_and_push(commit_message, confirmed=False):
         # 3. Push
         r3 = subprocess.run(
             ['git', 'push'],
-            cwd=base_dir, capture_output=True, text=True, timeout=30
+            cwd=base_dir, capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=30
         )
         if r3.returncode != 0:
             return (f"Committed locally but push failed:\n{r3.stderr[:SHELL_OUTPUT_LIMIT]}\n"
