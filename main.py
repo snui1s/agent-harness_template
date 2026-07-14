@@ -27,10 +27,17 @@ if os.path.exists(env_path):
 # --- Configurations ---
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+
+
+#zero data retention models
+# MODEL_NAME = "inclusionai/ring-2.6-1t" 
 # MODEL_NAME = "deepseek/deepseek-v4-flash" maybe the best
-# MODEL_NAME = "tencent/hy3:free"
-MODEL_NAME = "google/gemma-4-31b-it"
-COMPACTION_MODEL = "google/gemini-2.5-flash-lite:nitro"
+
+# MODEL_NAME = "google/gemma-4-31b-it"
+# COMPACTION_MODEL = "google/gemini-2.5-flash-lite:nitro"
+
+MODEL_NAME = "deepseek/deepseek-v4-flash"
+COMPACTION_MODEL = "deepseek/deepseek-v4-flash"
 
 # Memory management parameters
 MAX_ACTIVE_MESSAGES = 25 # Recommended range: 30-40
