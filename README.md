@@ -18,14 +18,13 @@ This agent is designed to be a pragmatic assistant with the following core capab
 .
 ├── src/
 │   └── agent/
-│       ├── db.py             # Database management for long-term memory
-│       ├── memory.py         # Logic for handling agent memory and context
+│       ├── db.py             # SQLite persistence layer (sessions, messages, memory)
+│       ├── memory.py         # Context compaction and long-term fact extraction
 │       ├── skills_loader.py  # Dynamic loading system for specialized skills
 │       └── tools.py          # Definition of available tools the agent can use
 ├── skills/                   # Directory containing specialized skill definitions
 ├── main.py                   # Entry point of the application
-├── agent_data.db             # SQLite database for persistence
-├── chat_archive.jsonl        # Log of agent conversations
+├── agent_data.db             # SQLite database for all persistence
 ├── pyproject.toml            # Project dependencies and configuration
 └── README.md                 # Project documentation
 ```

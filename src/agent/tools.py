@@ -606,7 +606,7 @@ my_tools = [
                 "properties": {
                     "filepath": {
                         "type": "string",
-                        "description": "The exact path to the file (e.g., 'main.py', 'chat_archive.jsonl')"
+                        "description": "The exact path to the file (e.g., 'main.py', 'README.md')"
                     }
                 },
                 "required": ["filepath"]
@@ -703,7 +703,7 @@ my_tools = [
                 "properties": {
                     "filepath": {
                         "type": "string",
-                        "description": "The exact path to the file (e.g., 'main.py', 'chat_archive.jsonl')."
+                        "description": "The exact path to the file (e.g., 'main.py', 'README.md')."
                     }
                 },
                 "required": ["filepath"]

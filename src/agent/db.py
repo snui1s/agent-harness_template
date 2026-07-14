@@ -45,6 +45,7 @@ def init_db():
             content TEXT NOT NULL,
             tool_call_id TEXT,
             tool_name TEXT,
+            tool_calls_json TEXT,
             timestamp TEXT NOT NULL,
             FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
         )
@@ -62,6 +63,12 @@ def init_db():
 
     # Speeds up "load all messages for session X ordered by time"
     cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)")
+
+    # --- Migration: add tool_calls_json column to existing databases ---
+    cur.execute("PRAGMA table_info(messages)")
+    existing_columns = {row["name"] for row in cur.fetchall()}
+    if "tool_calls_json" not in existing_columns:
+        cur.execute("ALTER TABLE messages ADD COLUMN tool_calls_json TEXT")
 
     conn.commit()
     conn.close()
@@ -117,15 +124,18 @@ def session_exists(session_id):
 
 # --- Message management ---
 
-def save_message(session_id, role, content, tool_call_id=None, tool_name=None):
+def save_message(session_id, role, content, tool_call_id=None, tool_name=None, tool_calls_json=None):
     """Insert one message into a session's history. Call this right after every
-    user input, assistant reply, or tool result - not just at compaction/exit time."""
+    user input, assistant reply, tool-call request, or tool result.
+
+    For assistant messages that invoke tools, pass the serialized tool_calls
+    array as `tool_calls_json` so the full interaction is recoverable."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (session_id, role, content, tool_call_id, tool_name, datetime.now().isoformat())
+        """INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, tool_calls_json, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, role, content, tool_call_id, tool_name, tool_calls_json, datetime.now().isoformat())
     )
     conn.commit()
     conn.close()
@@ -134,11 +144,14 @@ def save_message(session_id, role, content, tool_call_id=None, tool_name=None):
 
 def load_messages(session_id):
     """Load all messages for a session, in chronological order, as plain dicts
-    ready to drop into conversation_history."""
+    ready to drop into conversation_history.
+
+    Assistant messages that originally carried tool_calls are reconstructed
+    with the proper 'tool_calls' key so the LLM sees a valid history."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT role, content, tool_call_id, tool_name FROM messages WHERE session_id = ? ORDER BY id ASC",
+        "SELECT role, content, tool_call_id, tool_name, tool_calls_json FROM messages WHERE session_id = ? ORDER BY id ASC",
         (session_id,)
     )
     rows = cur.fetchall()
@@ -151,6 +164,13 @@ def load_messages(session_id):
             msg["tool_call_id"] = row["tool_call_id"]
         if row["tool_name"]:
             msg["name"] = row["tool_name"]
+        # Reconstruct tool_calls for assistant messages that invoked tools
+        if row["tool_calls_json"]:
+            try:
+                import json
+                msg["tool_calls"] = json.loads(row["tool_calls_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
         messages.append(msg)
     return messages
 
