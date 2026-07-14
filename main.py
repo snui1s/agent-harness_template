@@ -9,6 +9,7 @@ from src.agent.tools import *
 from src.agent.memory import compact_memory
 import platform
 from src.agent import db
+from src.agent import skills_loader
 
 # Resolve script directory for absolute path references
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,13 +27,14 @@ if os.path.exists(env_path):
 # --- Configurations ---
 MAX_RETRIES = 3
 RETRY_DELAY = 2
-# MODEL_NAME = "qwen/qwen3-next-80b-a3b-thinking"
-MODEL_NAME = "tencent/hy3:free"
-# MODEL_NAME = "openrouter/free"
+# MODEL_NAME = "deepseek/deepseek-v4-flash" maybe the best
+# MODEL_NAME = "tencent/hy3:free"
+MODEL_NAME = "google/gemma-4-31b-it"
+COMPACTION_MODEL = "google/gemini-2.5-flash-lite:nitro"
 
 # Memory management parameters
-MAX_ACTIVE_MESSAGES = 6 # Recommended range: 30-40
-KEEP_RECENT = 2 # Recommended range: 3-6
+MAX_ACTIVE_MESSAGES = 25 # Recommended range: 30-40
+KEEP_RECENT = 4 # Recommended range: 3-6
 OFFLOAD_FILE = os.path.join(script_dir, "chat_archive.jsonl")
 
 conversation_history = []
@@ -43,23 +45,35 @@ BASE_SYSTEM_PROMPT = f"""You are an intelligent, highly pragmatic AI assistant w
 
 CRITICAL OPERATIONAL GUIDELINES:
 1. TOOL USAGE: Call tools ONLY when strictly necessary. Answer general knowledge, philosophy, or history questions directly using your own internal knowledge without relying on tools.
-2. FILE EDITING & TRUST: When you use the 'edit_local_file' or 'replace_in_file' tools to modify content, trust the success message returned by the tool. DO NOT call 'read_local_file', 'view_file_lines', or 'list_directory' immediately afterward to verify your action. Once the tool returns a success status, consider the task complete and reply to the user immediately.
-3. SMART FILE INSPECTION: When dealing with large files, prefer using 'get_file_info' first to check the size, or 'view_file_lines' to read specific portions instead of reading the entire file, to keep latency low and save token usage.
-4. TARGETED MODIFICATIONS: When asked to modify a specific function, variable, or block of code within an existing file, prefer using 'replace_in_file' over 'edit_local_file' to avoid accidentally destroying other parts of the file.
-5. CONCISE COMPLETION: Avoid multi-step verification loops. Execute the requested action, review the output from the tool, and provide your final response directly to the user.
-6. GIT COMMIT & PUSH: When the user asks to commit and/or push changes, use the 'git_commit_and_push' tool directly - do NOT run 'git add', 'git commit', 'git push' one by one via 'execute_shell_command'. Only use 'execute_shell_command' with 'git status' or 'git diff' first if you genuinely need to inspect changes before deciding on a commit message.
-7. WEB SEARCH: Use 'web_search' only when the question involves current events, recent releases, real-time data (prices, weather, news), or facts you're not confident about due to your knowledge cutoff. Do NOT use it for general knowledge, well-established facts, or coding/logic questions you can answer directly.
+2. CONCISE COMPLETION: Avoid multi-step verification loops. Execute the requested action, review the output from the tool, and provide your final response directly to the user.
+3. WEB SEARCH: Use 'web_search' only when the question involves current events, recent releases, real-time data (prices, weather, news), or facts you're not confident about due to your knowledge cutoff. Do NOT use it for general knowledge, well-established facts, or coding/logic questions you can answer directly.
 NOTE: This system runs on {platform.system()} ({os.name}). Use {platform.system()}-appropriate shell syntax."""
 
-
 def build_system_prompt():
-    """Append any long-term memory facts on top of the base persona prompt."""
+    """Assemble the full system prompt in this order (stable content first, for
+    prompt-caching friendliness):
+      1. Base persona + operational rules (static)
+      2. Project README (static, changes rarely)
+      3. Available skills list (static, changes rarely)
+      4. Long-term memory facts (grows over time, least stable of the four)
+    """
+    prompt = BASE_SYSTEM_PROMPT
+
+    readme = skills_loader.load_readme()
+    if readme:
+        prompt += f"\n\nPROJECT README:\n{readme}"
+
+    skills_block = skills_loader.build_skills_prompt_block()
+    if skills_block:
+        prompt += skills_block
+
     facts = db.load_all_memory()
-    if not facts:
-        return BASE_SYSTEM_PROMPT
-    memory_block = "\n\nLONG-TERM MEMORY (facts learned about the user from past conversations):\n"
-    memory_block += "\n".join(f"- {fact}" for fact in facts)
-    return BASE_SYSTEM_PROMPT + memory_block
+    if facts:
+        memory_block = "\n\nLONG-TERM MEMORY (facts learned about the user from past conversations):\n"
+        memory_block += "\n".join(f"- {fact}" for fact in facts)
+        prompt += memory_block
+
+    return prompt
 
 
 def select_session():
@@ -162,7 +176,7 @@ while True:
         MAX_ACTIVE_MESSAGES,
         KEEP_RECENT,
         OFFLOAD_FILE,
-        MODEL_NAME,
+        COMPACTION_MODEL,
         SYSTEM_PROMPT,
         session_id=current_session_id
     )
@@ -268,7 +282,7 @@ while True:
                         elif func_name == "view_file_lines":
                             filepath = args.get("filepath", "")
                             start = args.get("start_line", 1)
-                            end = args.get("end_line", 50)
+                            end = args.get("end_line", 200)
                             tool_result = view_file_lines(filepath, start, end)
                             tool_end_time = time.time()
                             print(f"  [Tool]: view_file_lines('{filepath}', {start}-{end}) => (took {tool_end_time - tool_start_time:.2f}s)")
@@ -333,6 +347,12 @@ while True:
                             tool_result = web_search(query, max_results)
                             tool_end_time = time.time()
                             print(f"  [Tool]: web_search('{query}') => [Found {len(str(tool_result))} chars] (took {tool_end_time - tool_start_time:.2f}s)")
+
+                        elif func_name == "read_skill":
+                            skill_name = args.get("skill_name", "")
+                            tool_result = skills_loader.read_skill(skill_name)
+                            tool_end_time = time.time()
+                            print(f"  [Tool]: read_skill('{skill_name}') => [Read {len(str(tool_result))} chars] (took {tool_end_time - tool_start_time:.2f}s)")
                             
                         conversation_history.append({
                             "role": "tool",
