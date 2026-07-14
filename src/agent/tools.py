@@ -23,6 +23,29 @@ if os.path.exists(env_path):
 # --- Helper Functions (Tools) ---
 MODEL_NAME = "deepseek/deepseek-v4-flash"
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
+
+def truncate_content(content, max_chars=5000, head_ratio=0.6):
+    """
+    Truncate long content while keeping BOTH the head and tail, instead of just
+    cutting off the end. Important for things like shell output or logs where
+    the important part (an error, exit summary, final result) often sits at
+    the very end - head-only truncation would silently drop exactly that.
+    """
+    if not content or len(content) <= max_chars:
+        return content
+
+    head_size = int(max_chars * head_ratio)
+    tail_size = max_chars - head_size
+    omitted = len(content) - max_chars
+
+    return (
+        content[:head_size]
+        + f"\n\n...[TRUNCATED - {omitted} characters omitted]...\n\n"
+        + content[-tail_size:]
+    )
+
+
 def get_current_time():
     """
     Function: Retrieves the current system date and time formatted as a string.
@@ -122,8 +145,16 @@ def list_directory(folder_path="."):
         items = os.listdir(target_path)
         if not items:
             return "Directory is empty."
-            
-        return f"Contents of {folder_path}:\n" + "\n".join(f"- {item}" for item in items)
+
+        if len(items) > 200:
+            head = items[:120]
+            tail = items[-80:]
+            omitted = len(items) - 200
+            shown = head + [f"...[TRUNCATED - {omitted} more items omitted]..."] + tail
+        else:
+            shown = items
+
+        return f"Contents of {folder_path}:\n" + "\n".join(f"- {item}" for item in shown)
     except Exception as e:
         return f"Error listing directory: {str(e)}"
 
@@ -159,8 +190,16 @@ def search_in_files(keyword, folder_path="."):
                         
         if not results:
             return f"No matches found for '{keyword}'."
-            
-        return f"Found '{keyword}' in:\n" + "\n".join(results[:50]) # Limit results to 50 items to prevent token overflow
+
+        if len(results) > 50:
+            head = results[:30]
+            tail = results[-20:]
+            omitted = len(results) - 50
+            shown = head + [f"...[TRUNCATED - {omitted} more matches omitted]..."] + tail
+        else:
+            shown = results
+
+        return f"Found '{keyword}' in:\n" + "\n".join(shown)
     except Exception as e:
         return f"Error searching files: {str(e)}"
 
@@ -437,11 +476,8 @@ def execute_shell_command(command, confirmed=False):
             timeout=SHELL_TIMEOUT_SECONDS
         )
 
-        stdout = result.stdout[:SHELL_OUTPUT_LIMIT]
-        stderr = result.stderr[:SHELL_OUTPUT_LIMIT]
-
-        if len(result.stdout) > SHELL_OUTPUT_LIMIT:
-            stdout += "\n[...output truncated...]"
+        stdout = truncate_content(result.stdout, SHELL_OUTPUT_LIMIT)
+        stderr = truncate_content(result.stderr, SHELL_OUTPUT_LIMIT)
 
         return (f"Exit Code: {result.returncode}\n"
                 f"STDOUT:\n{stdout}\n"
@@ -480,7 +516,7 @@ def git_commit_and_push(commit_message, confirmed=False):
             encoding='utf-8', errors='replace', timeout=SHELL_TIMEOUT_SECONDS
         )
         if r1.returncode != 0:
-            return f"Failed at 'git add -A':\n{r1.stderr[:SHELL_OUTPUT_LIMIT]}"
+            return f"Failed at 'git add -A':\n{truncate_content(r1.stderr, SHELL_OUTPUT_LIMIT)}"
 
         # 2. Commit
         r2 = subprocess.run(
@@ -491,7 +527,7 @@ def git_commit_and_push(commit_message, confirmed=False):
         if r2.returncode != 0:
             if "nothing to commit" in r2.stdout.lower():
                 return "Nothing to commit - working tree is already clean."
-            return f"Failed at 'git commit':\n{r2.stdout[:SHELL_OUTPUT_LIMIT]}\n{r2.stderr[:SHELL_OUTPUT_LIMIT]}"
+            return f"Failed at 'git commit':\n{truncate_content(r2.stdout, SHELL_OUTPUT_LIMIT)}\n{truncate_content(r2.stderr, SHELL_OUTPUT_LIMIT)}"
 
         # 3. Push
         r3 = subprocess.run(
@@ -500,7 +536,7 @@ def git_commit_and_push(commit_message, confirmed=False):
             encoding='utf-8', errors='replace', timeout=30
         )
         if r3.returncode != 0:
-            return (f"Committed locally but push failed:\n{r3.stderr[:SHELL_OUTPUT_LIMIT]}\n"
+            return (f"Committed locally but push failed:\n{truncate_content(r3.stderr, SHELL_OUTPUT_LIMIT)}\n"
                     f"(Commit is saved locally - you can retry the push once the issue is fixed.)")
 
         return (f"Success: Changes committed and pushed.\n"
@@ -570,7 +606,7 @@ my_tools = [
                 "properties": {
                     "filepath": {
                         "type": "string",
-                        "description": "The exact path to the file (e.g., 'main.py', 'chat_archive.jsonl')"
+                        "description": "The exact path to the file (e.g., 'main.py', 'README.md')"
                     }
                 },
                 "required": ["filepath"]
@@ -667,7 +703,7 @@ my_tools = [
                 "properties": {
                     "filepath": {
                         "type": "string",
-                        "description": "The exact path to the file (e.g., 'main.py', 'chat_archive.jsonl')."
+                        "description": "The exact path to the file (e.g., 'main.py', 'README.md')."
                     }
                 },
                 "required": ["filepath"]

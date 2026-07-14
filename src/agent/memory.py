@@ -4,19 +4,6 @@ import json
 from openrouter import OpenRouter
 from . import db
 
-def offload_to_disk(messages, offload_file):
-    """
-    Function: Appends old/raw messages to a JSON Lines (JSONL) file for long-term cold storage.
-    Args:
-        messages (list): A list of message dictionaries to write to disk.
-        offload_file (str): Path to the archive file.
-    """
-    with open(offload_file, "a", encoding="utf-8") as f:
-        for msg in messages:
-            f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-    print(f"  [Storage]: Offloaded {len(messages)} raw messages to disk.")
-
-
 def _parse_compaction_response(raw_text):
     """
     Split a combined 'SUMMARY: ... FACTS: [...]' response into (summary, facts).
@@ -49,22 +36,23 @@ def _parse_compaction_response(raw_text):
     return summary, facts
 
 
-def compact_memory(conversation_history, max_active_messages, keep_recent, offload_file, model_name, system_prompt, session_id=None):
+def compact_memory(conversation_history, max_active_messages, keep_recent, model_name, system_prompt, session_id=None):
     """
     Function: Triggers memory compaction if active history exceeds max_active_messages.
     While compacting, also extracts any durable, reusable facts about the user (identity,
     preferences, ongoing projects) and saves them to the long-term memory table so they
     persist across sessions - not just within this one.
+
+    All messages are already persisted to SQLite in real-time, so no disk offloading is needed.
+
     Returns:
         list: The updated conversation history (compacted or not).
     """
     if len(conversation_history) > max_active_messages:
-        print("\n  [System]: Memory full. Triggering Compaction & Offloading...")
+        print("\n  [System]: Memory full. Triggering Compaction...")
         
         messages_to_compact = conversation_history[:-keep_recent]
         recent_messages = conversation_history[-keep_recent:]
-        
-        offload_to_disk(messages_to_compact, offload_file)
         
         combined_prompt = (
             "You are compacting a conversation history. Read the messages below and respond "

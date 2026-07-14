@@ -615,12 +615,14 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "openrouter" },
+    { name = "requests" },
     { name = "yfinance" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "openrouter", specifier = ">=0.11.0" },
+    { name = "requests" },
     { name = "yfinance", specifier = ">=1.5.0" },
 ]
 
