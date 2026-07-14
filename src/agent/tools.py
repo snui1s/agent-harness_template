@@ -9,8 +9,8 @@ import requests
 # Load environment variables from local .env file (checking CWD first, then climbing up from script location)
 env_path = ".env"
 if not os.path.exists(env_path):
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    env_path = os.path.abspath(os.path.join(script_dir, "..", "..", ".env"))
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    env_path = os.path.realpath(os.path.join(script_dir, "..", "..", ".env"))
 
 if os.path.exists(env_path):
     with open(env_path, "r", encoding="utf-8") as f:
@@ -21,7 +21,7 @@ if os.path.exists(env_path):
                 os.environ[key.strip()] = val.strip()
 
 # --- Helper Functions (Tools) ---
-MODEL_NAME = "openrouter/free"
+MODEL_NAME = "deepseek/deepseek-v4-flash"
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 def get_current_time():
     """
@@ -40,11 +40,11 @@ def read_local_file(filepath):
     """
     # Files at or below this size are returned as-is - no need to burn an extra
     # API call and ~15-20s of latency summarizing something already small.
-    RAW_READ_THRESHOLD = 2000
+    RAW_READ_THRESHOLD = 10000
  
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(filepath)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(filepath)
  
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -65,7 +65,7 @@ def read_local_file(filepath):
  
         # Large file: read a chunk and delegate to a Sub-agent to summarize
         with open(target_path, "r", encoding="utf-8") as f:
-            content = f.read(3000) # Read slightly larger size since the Sub-agent will summarize it
+            content = f.read()
             
         print(f"    [Sub-Agent]: Analyzing file {filepath}...")
         sub_agent_prompt = f"You are a file analysis AI assistant. Please summarize the key content of the following code or document as concisely as possible:\n\n{content}"
@@ -106,8 +106,8 @@ def get_stock_price(ticker):
 def list_directory(folder_path="."):
     """Simulate 'ls' command: List files and folders in the specified folder path."""
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(folder_path)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(folder_path)
 
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -130,8 +130,8 @@ def list_directory(folder_path="."):
 def search_in_files(keyword, folder_path="."):
     """Simulate 'grep' command: Search for keyword within .py, .txt, .json, .md, .env files."""
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(folder_path)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(folder_path)
 
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -171,8 +171,8 @@ def edit_local_file(filepath, content, mode="w"):
     mode='a' is to append content to the end of the file.
     """
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(filepath)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(filepath)
 
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -197,8 +197,8 @@ def get_file_info(filepath):
     Helps the agent evaluate file size before reading to avoid token overflow.
     """
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(filepath)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(filepath)
 
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -228,14 +228,14 @@ def get_file_info(filepath):
     except Exception as e:
         return f"Error fetching file info: {str(e)}"
 
-def view_file_lines(filepath, start_line=1, end_line=50):
+def view_file_lines(filepath, start_line=1, end_line=200):
     """
     Read specific lines of a file (similar to head/tail commands).
     Helps save tokens and reduce latency when reading large files.
     """
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(filepath)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(filepath)
 
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -272,8 +272,8 @@ def replace_in_file(filepath, old_text, new_text):
     Allows the agent to modify specific parts of code or text accurately without overwriting the entire file.
     """
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(filepath)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(filepath)
 
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -308,8 +308,8 @@ def replace_in_file(filepath, old_text, new_text):
 def delete_local_file(filepath):
     """Simulate 'rm' command: Delete unnecessary or temporary files to keep the workspace organized."""
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        target_path = os.path.abspath(filepath)
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(filepath)
 
         if os.path.commonpath([base_dir, target_path]) != base_dir:
             return "Error: Security block!"
@@ -336,9 +336,9 @@ def delete_local_file(filepath):
 def move_or_rename_file(source_path, dest_path):
     """Simulate 'mv' command: Move a file to a new path or rename it within the project."""
     try:
-        base_dir = os.path.abspath(os.getcwd())
-        src_abs = os.path.abspath(source_path)
-        dst_abs = os.path.abspath(dest_path)
+        base_dir = os.path.realpath(os.getcwd())
+        src_abs = os.path.realpath(source_path)
+        dst_abs = os.path.realpath(dest_path)
 
         if os.path.commonpath([base_dir, dst_abs]) != base_dir or os.path.commonpath([base_dir, src_abs]) != base_dir:
             return "Error: Security block!"
@@ -423,7 +423,7 @@ def execute_shell_command(command, confirmed=False):
             return "Error: Empty command after parsing."
 
         # 4. Restrict working directory to the project folder
-        base_dir = os.path.abspath(os.getcwd())
+        base_dir = os.path.realpath(os.getcwd())
 
         # 5. Run with a strict timeout and capped output
         result = subprocess.run(
@@ -470,7 +470,7 @@ def git_commit_and_push(commit_message, confirmed=False):
                 f"'{commit_message}', and push to the remote. Ask the user to confirm "
                 f"before re-calling this tool with confirmed=true.")
 
-    base_dir = os.path.abspath(os.getcwd())
+    base_dir = os.path.realpath(os.getcwd())
 
     try:
         # 1. Stage all changes
@@ -678,7 +678,7 @@ my_tools = [
         "type": "function",
         "function": {
             "name": "view_file_lines",
-            "description": "Read specific lines of a file rather than the whole document. Acts like head/tail commands. Highly recommended for inspecting portions of large files or logs to save token usage.",
+            "description": "reads a range of lines, defaulting to 150 lines if not specified, Acts like head/tail commands. Highly recommended for inspecting portions of large files or logs to save token usage.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -824,6 +824,22 @@ my_tools = [
                 "required": ["query"]
             }
         }
+    },
+   {
+    "type": "function",
+    "function": {
+        "name": "read_skill",
+        "description": "Load the full instructions of one or more specialized skills. If multiple skills are relevant to the task, pass them as a comma-separated list in a single call (e.g. 'security-review,code-navigation') instead of calling this tool multiple times.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "One skill name, or multiple comma-separated skill names (e.g. 'security-review,code-navigation'), matching the folder names listed in AVAILABLE SKILLS."
+                    }
+                },
+            "required": ["skill_name"]
+            }
+        }
     }
-
 ]
