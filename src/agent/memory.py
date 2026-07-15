@@ -54,18 +54,29 @@ def compact_memory(conversation_history, max_active_messages, keep_recent, model
         messages_to_compact = conversation_history[:-keep_recent]
         recent_messages = conversation_history[-keep_recent:]
         
+        db.archive_messages(session_id, messages_to_compact)
+        print(f"  [Storage]: Archived {len(messages_to_compact)} messages.")
+
+        # Only count messages that actually came from the messages table -
+        # the synthetic system-prompt entry (present at index 0 on the very
+        # first compaction) was never a real DB row, so it must not shift
+        # the reload watermark.
+        newly_archived_count = sum(1 for m in messages_to_compact if m.get("role") != "system")
+        
         combined_prompt = (
             "You are compacting a conversation history. Read the messages below and respond "
             "in EXACTLY this format (no extra text before or after):\n\n"
             "SUMMARY: <a concise summary of the key context and facts from these messages>\n"
-            "FACTS: <a JSON array of short, durable facts about the user - identity, preferences, "
-            "ongoing projects, constraints - that would still be useful in a completely different, "
-            "future conversation. Ignore anything trivial or task-specific. Use [] if there is nothing "
-            "worth remembering long-term.>\n\n"
+            "FACTS: <a JSON array of PLAIN TEXT STRINGS only - NOT nested objects or dictionaries. "
+            "Each item must be a complete, human-readable sentence, e.g. \"User's name is Nell\" or "
+            "\"User enjoys jazz music and locked-room mystery novels\". Include facts, preferences, "
+            "opinions, or interests the user has mentioned, even casual ones - not just formal "
+            "identity facts. Never return {key: value} style objects, always full sentences as "
+            "strings. Use [] only if truly nothing was worth remembering.>\n\n"
             "Messages:\n"
         )
         for msg in messages_to_compact:
-            combined_prompt += f"{msg['role'].upper()}: {msg.get('content', '')}\n"
+            combined_prompt += f"{msg['role'].upper()}: {msg.get('content') or ''}\n"
             
         try:
             print("  [System]: Compacting context (summarizing + extracting memory)...")
@@ -84,9 +95,18 @@ def compact_memory(conversation_history, max_active_messages, keep_recent, model
             compacted_summary, extracted_facts = _parse_compaction_response(raw_content)
 
             if extracted_facts:
+                saved_count = 0
                 for fact in extracted_facts:
-                    db.save_memory_fact(fact, session_id)
-                print(f"  [Memory]: Saved {len(extracted_facts)} long-term fact(s): {extracted_facts}")
+                    if not db.fact_exists(fact):
+                        db.save_memory_fact(fact, session_id)
+                        saved_count += 1
+                print(f"  [Memory]: Saved {saved_count}/{len(extracted_facts)} new long-term fact(s) (duplicates skipped).")
+
+            # Persist the compaction watermark so reopening this session later
+            # skips these already-processed messages instead of re-compacting
+            # (and re-billing an LLM call for) the exact same history again.
+            prev_archived_count, _ = db.get_compaction_state(session_id)
+            db.update_compaction_state(session_id, prev_archived_count + newly_archived_count, compacted_summary)
             
             updated_history = [
                 {"role": "system", "content": f"{system_prompt}\n\n[Previous Context Summary]: {compacted_summary}"}
