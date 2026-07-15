@@ -8,6 +8,7 @@ dependencies = [
     "openrouter>=0.11.0",
     "yfinance>=1.5.0",
     "requests",
+    "pytest>=9.1.1",
 ]
 
 [tool.uv]
