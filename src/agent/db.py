@@ -62,14 +62,14 @@ def init_db():
     """)
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS archived_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id INTEGER NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        archived_at TEXT NOT NULL,
-        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-        UNIQUE(session_id, role, content)
+        CREATE TABLE IF NOT EXISTS archived_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            archived_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            UNIQUE(session_id, role, content)
         )
     """)
 
@@ -82,6 +82,17 @@ def init_db():
     existing_columns = {row["name"] for row in cur.fetchall()}
     if "tool_calls_json" not in existing_columns:
         cur.execute("ALTER TABLE messages ADD COLUMN tool_calls_json TEXT")
+
+    # --- Migration: add compaction watermark columns to sessions ---
+    # archived_count tracks how many of this session's messages have already
+    # been compacted away, so reloading the session doesn't re-compact them
+    # (and re-bill an LLM call) every single time it's reopened.
+    cur.execute("PRAGMA table_info(sessions)")
+    session_columns = {row["name"] for row in cur.fetchall()}
+    if "archived_count" not in session_columns:
+        cur.execute("ALTER TABLE sessions ADD COLUMN archived_count INTEGER DEFAULT 0")
+    if "last_summary" not in session_columns:
+        cur.execute("ALTER TABLE sessions ADD COLUMN last_summary TEXT")
 
     conn.commit()
     conn.close()
@@ -155,9 +166,14 @@ def save_message(session_id, role, content, tool_call_id=None, tool_name=None, t
     touch_session(session_id)
 
 
-def load_messages(session_id):
-    """Load all messages for a session, in chronological order, as plain dicts
+def load_messages(session_id, skip=0):
+    """Load messages for a session, in chronological order, as plain dicts
     ready to drop into conversation_history.
+
+    `skip` lets the caller drop the oldest N messages that have already been
+    compacted away (see get_compaction_state/update_compaction_state) - without
+    this, reopening a session would re-see the full raw history and trigger
+    compaction all over again every time.
 
     Assistant messages that originally carried tool_calls are reconstructed
     with the proper 'tool_calls' key so the LLM sees a valid history."""
@@ -169,6 +185,9 @@ def load_messages(session_id):
     )
     rows = cur.fetchall()
     conn.close()
+
+    if skip:
+        rows = rows[skip:]
 
     messages = []
     for row in rows:
@@ -190,10 +209,26 @@ def load_messages(session_id):
 
 # --- Long-term memory ---
 
+def fact_exists(fact_text, similarity_threshold=0.85):
+    """Check if a near-duplicate fact already exists in memory, to avoid
+    saving the same fact over and over (e.g. 'User's name is Nell' repeated
+    every compaction cycle)."""
+    import difflib
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT fact_text FROM memory")
+    existing = [row["fact_text"] for row in cur.fetchall()]
+    conn.close()
+
+    for old_fact in existing:
+        ratio = difflib.SequenceMatcher(None, fact_text.lower(), old_fact.lower()).ratio()
+        if ratio >= similarity_threshold:
+            return True
+    return False
+
+
 def save_memory_fact(fact_text, source_session_id=None):
     """Store one extracted long-term fact."""
-    if fact_exists(fact_text):
-        return
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -215,7 +250,10 @@ def load_all_memory():
 
 
 def archive_messages(session_id, messages):
-    """Move compacted-out messages into cold storage, scoped to their session."""
+    """Move compacted-out messages into cold storage, scoped to their session.
+    Uses INSERT OR IGNORE against the UNIQUE(session_id, role, content) constraint
+    so re-archiving the same messages (e.g. from a stale in-memory reload) is a
+    harmless no-op instead of piling up duplicates."""
     if not messages:
         return
     now = datetime.now().isoformat()
@@ -241,17 +279,31 @@ def load_archived_messages(session_id):
     conn.close()
     return [dict(row) for row in rows]
 
-def fact_exists(fact_text, similarity_threshold=0.85):
-    """เช็คว่ามี fact คล้ายกันอยู่แล้วไหม ก่อนเซฟซ้ำ"""
-    import difflib
+
+# --- Compaction watermark (prevents re-compacting on every session reload) ---
+
+def get_compaction_state(session_id):
+    """Return (archived_count, last_summary) for a session - how many of its
+    messages have already been compacted away, and the most recent summary."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT fact_text FROM memory")
-    existing = [row["fact_text"] for row in cur.fetchall()]
+    cur.execute("SELECT archived_count, last_summary FROM sessions WHERE id = ?", (session_id,))
+    row = cur.fetchone()
     conn.close()
-    
-    for old_fact in existing:
-        ratio = difflib.SequenceMatcher(None, fact_text.lower(), old_fact.lower()).ratio()
-        if ratio >= similarity_threshold:
-            return True
-    return False
+    if row:
+        return row["archived_count"] or 0, row["last_summary"]
+    return 0, None
+
+
+def update_compaction_state(session_id, archived_count, summary):
+    """Persist how far compaction has progressed for a session, so reloading
+    it later picks up from here instead of re-processing already-compacted
+    messages (and paying for another LLM call to re-summarize them)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE sessions SET archived_count = ?, last_summary = ? WHERE id = ?",
+        (archived_count, summary, session_id)
+    )
+    conn.commit()
+    conn.close()

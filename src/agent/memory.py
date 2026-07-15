@@ -56,6 +56,12 @@ def compact_memory(conversation_history, max_active_messages, keep_recent, model
         
         db.archive_messages(session_id, messages_to_compact)
         print(f"  [Storage]: Archived {len(messages_to_compact)} messages.")
+
+        # Only count messages that actually came from the messages table -
+        # the synthetic system-prompt entry (present at index 0 on the very
+        # first compaction) was never a real DB row, so it must not shift
+        # the reload watermark.
+        newly_archived_count = sum(1 for m in messages_to_compact if m.get("role") != "system")
         
         combined_prompt = (
             "You are compacting a conversation history. Read the messages below and respond "
@@ -70,7 +76,7 @@ def compact_memory(conversation_history, max_active_messages, keep_recent, model
             "Messages:\n"
         )
         for msg in messages_to_compact:
-            combined_prompt += f"{msg['role'].upper()}: {msg.get('content', '')}\n"
+            combined_prompt += f"{msg['role'].upper()}: {msg.get('content') or ''}\n"
             
         try:
             print("  [System]: Compacting context (summarizing + extracting memory)...")
@@ -89,9 +95,18 @@ def compact_memory(conversation_history, max_active_messages, keep_recent, model
             compacted_summary, extracted_facts = _parse_compaction_response(raw_content)
 
             if extracted_facts:
+                saved_count = 0
                 for fact in extracted_facts:
-                    db.save_memory_fact(fact, session_id)
-                print(f"  [Memory]: Saved {len(extracted_facts)} long-term fact(s): {extracted_facts}")
+                    if not db.fact_exists(fact):
+                        db.save_memory_fact(fact, session_id)
+                        saved_count += 1
+                print(f"  [Memory]: Saved {saved_count}/{len(extracted_facts)} new long-term fact(s) (duplicates skipped).")
+
+            # Persist the compaction watermark so reopening this session later
+            # skips these already-processed messages instead of re-compacting
+            # (and re-billing an LLM call for) the exact same history again.
+            prev_archived_count, _ = db.get_compaction_state(session_id)
+            db.update_compaction_state(session_id, prev_archived_count + newly_archived_count, compacted_summary)
             
             updated_history = [
                 {"role": "system", "content": f"{system_prompt}\n\n[Previous Context Summary]: {compacted_summary}"}

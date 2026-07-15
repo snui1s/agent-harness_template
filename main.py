@@ -113,9 +113,15 @@ def select_session():
 
         elif choice.isdigit() and db.session_exists(int(choice)):
             sid = int(choice)
-            history = db.load_messages(sid)
+            archived_count, last_summary = db.get_compaction_state(sid)
+            history = db.load_messages(sid, skip=archived_count)
+            system_content = build_system_prompt()
+            if last_summary:
+                system_content += f"\n\n[Previous Context Summary]: {last_summary}"
             if not history or history[0].get("role") != "system":
-                history = [{"role": "system", "content": build_system_prompt()}] + history
+                history = [{"role": "system", "content": system_content}] + history
+            else:
+                history[0]["content"] = system_content
             print(f"Resumed session [{sid}] with {len(history)} message(s).\n")
             return sid, history
 
@@ -165,8 +171,11 @@ while True:
         target = user_input[7:].strip()
         if target.isdigit() and db.session_exists(int(target)):
             current_session_id = int(target)
-            loaded = db.load_messages(current_session_id)
+            archived_count, last_summary = db.get_compaction_state(current_session_id)
+            loaded = db.load_messages(current_session_id, skip=archived_count)
             SYSTEM_PROMPT = build_system_prompt()
+            if last_summary:
+                SYSTEM_PROMPT += f"\n\n[Previous Context Summary]: {last_summary}"
             if not loaded or loaded[0].get("role") != "system":
                 loaded = [{"role": "system", "content": SYSTEM_PROMPT}] + loaded
             else:
@@ -219,7 +228,7 @@ while True:
             agent_start_time = time.time() 
             
             with OpenRouter(api_key=os.getenv("OPENROUTER_API_KEY")) as client:
-                spinner = Spinner("Loading ")
+                spinner = Spinner("Reflecting")
                 spinner.start()
                 try:
                     response = client.chat.send(
