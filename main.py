@@ -35,17 +35,17 @@ RETRY_DELAY = 2
 # MODEL_NAME = "inclusionai/ring-2.6-1t" 
 # MODEL_NAME = "deepseek/deepseek-v4-flash" maybe the best
 
-# MODEL_NAME = "google/gemma-4-31b-it"
-# COMPACTION_MODEL = "google/gemini-2.5-flash-lite"
-
-MODEL_NAME = "google/gemini-2.5-flash-lite"
+MODEL_NAME = "google/gemma-4-31b-it"
 COMPACTION_MODEL = "google/gemini-2.5-flash-lite"
+
+# MODEL_NAME = "google/gemini-2.5-flash-lite"
+# COMPACTION_MODEL = "google/gemini-2.5-flash-lite"
 
 # MODEL_NAME = "deepseek/deepseek-v4-flash"
 # COMPACTION_MODEL = "deepseek/deepseek-v4-flash"
 
 # Memory management parameters
-MAX_ACTIVE_MESSAGES = 25 # Recommended range: 30-40
+MAX_ACTIVE_MESSAGES = 15 # Recommended range: 30-40
 KEEP_RECENT = 4 # Recommended range: 3-6
 
 conversation_history = []
@@ -58,6 +58,7 @@ CRITICAL OPERATIONAL GUIDELINES:
 1. TOOL USAGE: Call tools ONLY when strictly necessary. Answer general knowledge, philosophy, or history questions directly using your own internal knowledge without relying on tools.
 2. CONCISE COMPLETION: Avoid multi-step verification loops. Execute the requested action, review the output from the tool, and provide your final response directly to the user.
 3. WEB SEARCH: Use 'web_search' only when the question involves current events, recent releases, real-time data (prices, weather, news), or facts you're not confident about due to your knowledge cutoff. Do NOT use it for general knowledge, well-established facts, or coding/logic questions you can answer directly.
+4. LANGUAGE: Always respond in the same language the user's message is written in. If the user writes in Thai, respond in Thai. If mixed, follow the dominant language.
 NOTE: This system runs on {platform.system()} ({os.name}). Use {platform.system()}-appropriate shell syntax."""
 
 def build_system_prompt():
@@ -405,7 +406,7 @@ while True:
                     continue
                 
                 else:
-                    answer = message.content
+                    answer = message.content or "[No text response]"
                     total_elapsed = time.time() - loop_start_time
                     print(f"  [DEBUG] Total loop time: {total_elapsed:.2f}s across {loop_iteration} iteration(s)")
                     print(f"\nAgent (took {agent_duration:.2f}s): {answer}\n")

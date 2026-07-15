@@ -2,17 +2,17 @@
 
 A flexible and extensible Python-based AI agent harness designed to integrate memory, custom tools, and a database for long-term state management.
 
-## 🚀 Capabilities
+## Capabilities
 
-This agent is designed to be a pragmatic assistant with the following core capabilities:
-- **Workspace Management**: Read, write, edit, and organize files within the project directory.
-- **Dynamic Skill Loading**: Load specialized skills (e.g., security reviews, code navigation) on-the-fly to handle complex tasks.
-- **Long-term Memory**: Store and retrieve user preferences and historical context via a database.
-- **System Execution**: Execute shell commands and manage Git operations (commit, push, status).
-- **Web Integration**: Perform real-time web searches and fetch stock market data.
-- **Code Analysis**: Search across multiple files and perform targeted code modifications.
+This agent is designed as a pragmatic assistant with the following core capabilities:
+- **Workspace Management**: Ability to read, write, edit, and organize files within the project directory.
+- **Dynamic Skill Loading**: Ability to load specialized skills (e.g., security reviews, code navigation) dynamically to handle complex tasks.
+- **Long-term Memory**: Persistence of user preferences and historical context via a database.
+- **System Execution**: Execution of shell commands and management of Git operations (commit, push, status).
+- **Web Integration**: Real-time web search capabilities and stock market data retrieval.
+- **Code Analysis**: Multi-file search and targeted code modifications.
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
 .
@@ -29,14 +29,14 @@ This agent is designed to be a pragmatic assistant with the following core capab
 └── README.md                 # Project documentation
 ```
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 - **Language**: Python
 - **Dependency Management**: `uv` (or pip)
 - **Database**: SQLite
 - **Version Control**: Git
 
-## ⚙️ Getting Started
+## Getting Started
 
 1. **Install Dependencies**:
    ```bash
@@ -44,14 +44,14 @@ This agent is designed to be a pragmatic assistant with the following core capab
    ```
 
 2. **Environment Setup**:
-   Create a `.env` file in the root directory and add your required API keys.
+   Create a `.env` file in the root directory and add the required API keys.
 
 3. **Run the Agent**:
    ```bash
    python main.py
    ```
 
-## 🛡️ Specialized Skills
+## Specialized Skills
 The agent can expand its capabilities by loading scripts from the `/skills` folder. Currently supported skills include:
 - `code-navigation`: For deep diving into existing codebases.
 - `file-editing`: For precise content modifications.

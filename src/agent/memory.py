@@ -54,14 +54,19 @@ def compact_memory(conversation_history, max_active_messages, keep_recent, model
         messages_to_compact = conversation_history[:-keep_recent]
         recent_messages = conversation_history[-keep_recent:]
         
+        db.archive_messages(session_id, messages_to_compact)
+        print(f"  [Storage]: Archived {len(messages_to_compact)} messages.")
+        
         combined_prompt = (
             "You are compacting a conversation history. Read the messages below and respond "
             "in EXACTLY this format (no extra text before or after):\n\n"
             "SUMMARY: <a concise summary of the key context and facts from these messages>\n"
-            "FACTS: <a JSON array of short, durable facts about the user - identity, preferences, "
-            "ongoing projects, constraints - that would still be useful in a completely different, "
-            "future conversation. Ignore anything trivial or task-specific. Use [] if there is nothing "
-            "worth remembering long-term.>\n\n"
+            "FACTS: <a JSON array of PLAIN TEXT STRINGS only - NOT nested objects or dictionaries. "
+            "Each item must be a complete, human-readable sentence, e.g. \"User's name is Nell\" or "
+            "\"User enjoys jazz music and locked-room mystery novels\". Include facts, preferences, "
+            "opinions, or interests the user has mentioned, even casual ones - not just formal "
+            "identity facts. Never return {key: value} style objects, always full sentences as "
+            "strings. Use [] only if truly nothing was worth remembering.>\n\n"
             "Messages:\n"
         )
         for msg in messages_to_compact:

@@ -61,8 +61,21 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS archived_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        archived_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        UNIQUE(session_id, role, content)
+        )
+    """)
+
     # Speeds up "load all messages for session X ordered by time"
     cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_archived_session ON archived_messages(session_id)")
 
     # --- Migration: add tool_calls_json column to existing databases ---
     cur.execute("PRAGMA table_info(messages)")
@@ -179,6 +192,8 @@ def load_messages(session_id):
 
 def save_memory_fact(fact_text, source_session_id=None):
     """Store one extracted long-term fact."""
+    if fact_exists(fact_text):
+        return
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -197,3 +212,46 @@ def load_all_memory():
     rows = cur.fetchall()
     conn.close()
     return [row["fact_text"] for row in rows]
+
+
+def archive_messages(session_id, messages):
+    """Move compacted-out messages into cold storage, scoped to their session."""
+    if not messages:
+        return
+    now = datetime.now().isoformat()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT OR IGNORE INTO archived_messages (session_id, role, content, archived_at) VALUES (?, ?, ?, ?)",
+        [(session_id, m.get("role", "unknown"), m.get("content") or "", now) for m in messages]
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_archived_messages(session_id):
+    """Load a session's archived messages - scoped strictly to one session."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT role, content, archived_at FROM archived_messages WHERE session_id = ? ORDER BY id ASC",
+        (session_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def fact_exists(fact_text, similarity_threshold=0.85):
+    """เช็คว่ามี fact คล้ายกันอยู่แล้วไหม ก่อนเซฟซ้ำ"""
+    import difflib
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT fact_text FROM memory")
+    existing = [row["fact_text"] for row in cur.fetchall()]
+    conn.close()
+    
+    for old_fact in existing:
+        ratio = difflib.SequenceMatcher(None, fact_text.lower(), old_fact.lower()).ratio()
+        if ratio >= similarity_threshold:
+            return True
+    return False
