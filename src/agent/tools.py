@@ -1,28 +1,18 @@
 import os
 import subprocess
 import shlex
+import time
 from datetime import datetime
 from openrouter import OpenRouter
 import yfinance as yf
 import requests
-
-# Load environment variables from local .env file (checking CWD first, then climbing up from script location)
-env_path = ".env"
-if not os.path.exists(env_path):
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    env_path = os.path.realpath(os.path.join(script_dir, "..", "..", ".env"))
-
-if os.path.exists(env_path):
-    with open(env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+from . import config
+from . import skills_loader
 
 # --- Helper Functions (Tools) ---
-MODEL_NAME = "deepseek/deepseek-v4-flash"
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+# Configurations referenced from config module
+MODEL_NAME = config.MODEL_NAME
+TAVILY_API_KEY = config.TAVILY_API_KEY
 
 
 def truncate_content(content, max_chars=5000, head_ratio=0.6):
@@ -221,7 +211,11 @@ def edit_local_file(filepath, content, mode="w"):
             
         if mode not in ["w", "a"]:
             return "Error: Mode must be 'w' (overwrite) or 'a' (append)."
-            
+
+        parent_dir = os.path.dirname(target_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
         with open(target_path, mode, encoding="utf-8") as f:
             f.write(content)
             
@@ -410,7 +404,12 @@ SHELL_BLOCKED_PATTERNS = [
 # Commands allowed to run, but require explicit user confirmation first
 SHELL_DANGEROUS_PREFIXES = [
     'rm', 'mv', 'git push', 'git reset', 'git checkout --',
-    'kill', 'pkill', 'npm publish', 'pip install', 'pip uninstall'
+    'kill', 'pkill', 'npm publish', 'pip install', 'pip uninstall',
+    'uv pip', 'uv add', 'uv remove', 'uv sync',
+    'yarn add', 'yarn remove', 'yarn install',
+    'pnpm add', 'pnpm remove', 'pnpm install',
+    'bun add', 'bun remove', 'bun install',
+    'cargo add', 'cargo rm'
 ]
 
 SHELL_TIMEOUT_SECONDS = 10
@@ -429,11 +428,15 @@ def execute_shell_command(command, confirmed=False):
         # Reject chained commands - shlex.split() cannot separate them into
         # distinct subprocess calls, which silently mangles things like
         # 'git add -A && git commit -m "..."' into a single broken command.
-        for chain_op in ['&&', '||', ';', '|']:
-            if chain_op in command:
-                return (f"Error: Chained commands ('{chain_op}') are not supported. "
-                        f"Call this tool once per command instead (e.g. run 'git add -A' "
-                        f"first, then call again for 'git commit -m ...').")
+        # python -c "..." ใช้ ; เป็น syntax ปกติของภาษา ไม่ใช่การ chain คำสั่ง shell
+        is_python_inline = command.strip().startswith(('python -c', 'python3 -c', 'uv run python -c'))
+        
+        if not is_python_inline:
+            for chain_op in ['&&', '||', ';', '|']:
+                if chain_op in command:
+                    return (f"Error: Chained commands ('{chain_op}') are not supported. "
+                            f"Call this tool once per command instead (e.g. run 'git add -A' "
+                            f"first, then call again for 'git commit -m ...').")
 
         lowered = command.lower()
 
@@ -879,3 +882,143 @@ my_tools = [
         }
     }
 ]
+
+
+def dispatch_tool(func_name, args):
+    """
+    Central dispatcher for all agent tools. Handles:
+      1. Time measurement (logging how long a tool takes)
+      2. Argument unpacking and validation
+      3. Confirmation prompts for destructive commands (shell execute, git commit/push)
+      4. Graceful execution error handling
+    Returns the stringified result of the tool run.
+    """
+    tool_start_time = time.time()
+    tool_result = ""
+
+    try:
+        if func_name == "get_current_time":
+            tool_result = get_current_time()
+            tool_end_time = time.time()
+            print(f"  [Tool]: get_current_time() => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "read_local_file":
+            target_file = args.get("filepath", "")
+            tool_result = read_local_file(target_file)
+            tool_end_time = time.time()
+            print(f"  [Tool]: read_local_file('{target_file}') => [Read {len(str(tool_result))} chars] (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "get_stock_price":
+            target_ticker = args.get("ticker", "")
+            tool_result = get_stock_price(target_ticker.upper()) 
+            tool_end_time = time.time()
+            print(f"  [Tool]: get_stock_price('{target_ticker}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+        
+        elif func_name == "list_directory":
+            folder = args.get("folder_path", ".")
+            tool_result = list_directory(folder)
+            tool_end_time = time.time()
+            print(f"  [Tool]: list_directory('{folder}') => (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "search_in_files":
+            keyword = args.get("keyword", "")
+            folder = args.get("folder_path", ".")
+            tool_result = search_in_files(keyword, folder)
+            tool_end_time = time.time()
+            print(f"  [Tool]: search_in_files('{keyword}') => (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "edit_local_file":
+            filepath = args.get("filepath", "")
+            content = args.get("content", "")
+            mode = args.get("mode", "w")
+            tool_result = edit_local_file(filepath, content, mode)
+            tool_end_time = time.time()
+            print(f"  [Tool]: edit_local_file('{filepath}', mode='{mode}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "get_file_info":
+            filepath = args.get("filepath", "")
+            tool_result = get_file_info(filepath)
+            tool_end_time = time.time()
+            print(f"  [Tool]: get_file_info('{filepath}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "view_file_lines":
+            filepath = args.get("filepath", "")
+            start = args.get("start_line", 1)
+            end = args.get("end_line", 200)
+            tool_result = view_file_lines(filepath, start, end)
+            tool_end_time = time.time()
+            print(f"  [Tool]: view_file_lines('{filepath}', {start}-{end}) => (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "replace_in_file":
+            filepath = args.get("filepath", "")
+            old_txt = args.get("old_text", "")
+            new_txt = args.get("new_text", "")
+            tool_result = replace_in_file(filepath, old_txt, new_txt)
+            tool_end_time = time.time()
+            print(f"  [Tool]: replace_in_file('{filepath}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "delete_local_file":
+            filepath = args.get("filepath", "")
+            tool_result = delete_local_file(filepath)
+            tool_end_time = time.time()
+            print(f"  [Tool]: delete_local_file('{filepath}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        elif func_name == "move_or_rename_file":
+            src = args.get("source_path", "")
+            dst = args.get("dest_path", "")
+            tool_result = move_or_rename_file(src, dst)
+            tool_end_time = time.time()
+            print(f"  [Tool]: move_or_rename_file('{src}' -> '{dst}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+
+        elif func_name == "execute_shell_command":
+            shell_cmd = args.get("command", "")
+            tool_result = execute_shell_command(shell_cmd, confirmed=False)
+            tool_end_time = time.time()
+            print(f"  [Tool]: execute_shell_command('{shell_cmd}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+
+            if isinstance(tool_result, str) and tool_result.startswith("CONFIRMATION_REQUIRED"):
+                confirm_input = input(f"  [Confirm]: Allow this command to run? (y/n): ").strip().lower()
+                if confirm_input == "y":
+                    tool_result = execute_shell_command(shell_cmd, confirmed=True)
+                    print(f"  [Tool]: execute_shell_command('{shell_cmd}', confirmed) => {tool_result}")
+                else:
+                    tool_result = "User declined to run this command."
+                    print("  [System]: Command declined by user.")
+
+        elif func_name == "git_commit_and_push":
+            commit_msg = args.get("commit_message", "")
+            tool_result = git_commit_and_push(commit_msg, confirmed=False)
+            tool_end_time = time.time()
+            print(f"  [Tool]: git_commit_and_push('{commit_msg}') => {tool_result} (took {tool_end_time - tool_start_time:.2f}s)")
+
+            if isinstance(tool_result, str) and tool_result.startswith("CONFIRMATION_REQUIRED"):
+                confirm_input = input(f"  [Confirm]: Allow commit & push? (y/n): ").strip().lower()
+                if confirm_input == "y":
+                    tool_result = git_commit_and_push(commit_msg, confirmed=True)
+                    print(f"  [Tool]: git_commit_and_push('{commit_msg}', confirmed) => {tool_result}")
+                else:
+                    tool_result = "User declined to commit/push."
+                    print("  [System]: Commit/push declined by user.")
+
+        elif func_name == "web_search":
+            query = args.get("query", "")
+            max_results = args.get("max_results", 5)
+            tool_result = web_search(query, max_results)
+            tool_end_time = time.time()
+            print(f"  [Tool]: web_search('{query}') => [Found {len(str(tool_result))} chars] (took {tool_end_time - tool_start_time:.2f}s)")
+
+        elif func_name == "read_skill":
+            skill_name = args.get("skill_name", "")
+            tool_result = skills_loader.read_skill(skill_name)
+            tool_end_time = time.time()
+            print(f"  [Tool]: read_skill('{skill_name}') => [Read {len(str(tool_result))} chars] (took {tool_end_time - tool_start_time:.2f}s)")
+            
+        else:
+            tool_result = f"Error: Tool '{func_name}' is not recognized."
+            print(f"  [System Error]: {tool_result}")
+
+    except Exception as e:
+        tool_result = f"Error executing tool '{func_name}': {str(e)}"
+        print(f"  [System Error]: {tool_result}")
+
+    return str(tool_result)
