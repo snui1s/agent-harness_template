@@ -4,37 +4,43 @@ import os
 import time
 import json
 from datetime import datetime
-
 from src.agent import config
 from src.agent import db
 from src.agent import prompts
 from src.agent import session
+from src.agent import skills_loader
 from src.agent.tools import my_tools, dispatch_tool
 from src.agent.memory import compact_memory
-from src.agent.ui import Spinner
+from src.agent.ui import Spinner, get_user_input, print_banner, print_agent_response
 
 # --- Startup Initialization ---
 init_db_result = db.init_db()
 current_session_id, conversation_history = session.select_session()
 SYSTEM_PROMPT = conversation_history[0]["content"]
 
-print("=== Agent Harness Started (Sessions, Compaction & Tools) ===")
+# Format model name and path for the banner display
+model_display = "Deepseek V4 flash" if "deepseek-v4-flash" in config.MODEL_NAME else config.MODEL_NAME.split("/")[-1].replace("-", " ").title()
+project_path = os.path.realpath(os.getcwd()).replace("\\", "/")
+
+# Print the customized Losna CLI gold crescent moon banner
+print_banner(model_display, project_path)
 print(f"Current session: [{current_session_id}]")
 print("Commands: '/new <title>' new chat | '/sessions' list chats | '/switch <id>' change chat | '/help' help menu | '/exit' or '/quit' to leave.\n")
 
 # --- Main Conversation Loop ---
 
 while True:
-    user_input = input("You: ")
+    skills = skills_loader.list_skills()
+    user_input = get_user_input(skills)
     
+    # Ignore empty inputs and prompt again
+    if not user_input or not user_input.strip():
+        continue
+
     # Check for loop termination command
     if user_input.lower() in ['/exit', '/quit']:
         print("Shutting down agent...")
         break
-        
-    # Ignore empty inputs and prompt again
-    if not user_input.strip():
-        continue
 
     # --- Slash commands for session management & help ---
     if user_input.lower() == "/help":
@@ -43,7 +49,12 @@ while True:
         print("  /sessions      - List all chat sessions (tabs) and see their IDs")
         print("  /new <title>   - Start a new chat session (e.g. '/new Web Development')")
         print("  /switch <id>   - Switch to an existing chat session by its ID (e.g. '/switch 3')")
-        print("  /exit, /quit   - Terminate the agent harness session\n")
+        print("  /exit, /quit   - Terminate the agent harness session")
+        if skills:
+            print("\n=== Skill Commands (loads skill prompt dynamically) ===")
+            for s in skills:
+                print(f"  /{s['name']:<14} - {s['description']}")
+        print()
         continue
 
     if user_input.lower() == "/sessions":
@@ -80,11 +91,37 @@ while True:
             print(f"Session '{target}' not found. Use '/sessions' to see available chats.\n")
         continue
 
-    # State Update: Append the new user message to the active conversation history
-    conversation_history.append({"role": "user", "content": user_input})
-    _t0 = time.time()
-    db.save_message(current_session_id, "user", user_input)
-    print(f"  [DEBUG] db.save_message(user) took {time.time()-_t0:.3f}s")
+    is_skill_cmd = False
+    # Check for dynamic skill command (e.g. /unit-testing <query>)
+    if user_input.startswith("/") and not user_input.lower().startswith(('/help', '/sessions', '/new', '/switch', '/exit', '/quit')):
+        parts = user_input.split(maxsplit=1)
+        cmd_name = parts[0][1:].strip().lower()  # Strip leading '/'
+        query = parts[1].strip() if len(parts) > 1 else ""
+
+        matching_skills = [s for s in skills if s["name"].lower() == cmd_name]
+        if matching_skills:
+            skill = matching_skills[0]
+            print(f"  [System]: Invoking skill '{skill['name']}'...")
+            skill_content = skills_loader.read_skill(skill["name"])
+
+            # Load instruction into context & DB as a system guide
+            conversation_history.append({
+                "role": "system",
+                "content": f"[Invoked Skill Instructions: {skill['name']}]\n{skill_content}"
+            })
+            db.save_message(current_session_id, "system", f"[Invoked Skill: {skill['name']}]\n{skill_content}")
+
+            user_msg = query if query else f"I want you to use the '{skill['name']}' skill."
+            conversation_history.append({"role": "user", "content": user_msg})
+            db.save_message(current_session_id, "user", user_msg)
+            is_skill_cmd = True
+
+    if not is_skill_cmd:
+        # State Update: Append the new user message to the active conversation history
+        conversation_history.append({"role": "user", "content": user_input})
+        _t0 = time.time()
+        db.save_message(current_session_id, "user", user_input)
+        print(f"  [DEBUG] db.save_message(user) took {time.time()-_t0:.3f}s")
 
     # --- State: Memory Compaction Logic ---
     print(f"  [DEBUG] conversation_history length: {len(conversation_history)} (compaction threshold: {config.MAX_ACTIVE_MESSAGES})")
@@ -141,15 +178,19 @@ while True:
 
                 if hasattr(message, 'tool_calls') and message.tool_calls:
                     if tool_call_count >= config.MAX_TOOL_CALLS:
-                        print("  [System]: Too many tool calls. Forcing stop to prevent infinite loop.")
+                        print("  \033[1;31m[System]: Too many tool calls. Forcing stop to prevent infinite loop.\033[0m")
                         conversation_history = safe_history_backup[:-1] 
                         break
                         
-                    print(f"  [System]: Agent decided to use a tool (took {agent_duration:.2f}s)")
-                    tool_call_count += len(message.tool_calls)
+                    # Colored output for system decisions
+                    GREEN = "\033[1;32m"
+                    CYAN = "\033[1;36m"
+                    RESET = "\033[0m"
                     
+                    tool_call_count += len(message.tool_calls)
                     assistant_msg = message.model_dump(exclude_none=True)
                     conversation_history.append(assistant_msg)
+                    
                     # Persist the assistant tool-call message to SQLite
                     tc_json = json.dumps(assistant_msg.get("tool_calls", []), ensure_ascii=False)
                     db.save_message(
@@ -164,9 +205,21 @@ while True:
                             args = json.loads(tool_call.function.arguments)
                         except:
                             args = {}
-                            
-                        # Run the dispatcher
-                        tool_result = dispatch_tool(func_name, args)
+                        
+                        # Dynamic Spinner for active Tool Execution
+                        # Truncate args key for display if too long
+                        args_summary = str(args)[:35] + "..." if len(str(args)) > 35 else str(args)
+                        tool_spinner = Spinner(f"Running tool {CYAN}{func_name}{RESET} {args_summary}")
+                        tool_spinner.start()
+                        
+                        try:
+                            # Run the dispatcher
+                            tool_result = dispatch_tool(func_name, args)
+                        finally:
+                            tool_spinner.stop()
+                        
+                        # Print success checkmark instead of raw log dump
+                        print(f"  {GREEN}✔{RESET} Executed {CYAN}{func_name}{RESET} successfully.")
                         
                         tool_msg = {
                             "role": "tool",
@@ -189,7 +242,10 @@ while True:
                     answer = message.content or "[No text response]"
                     total_elapsed = time.time() - loop_start_time
                     print(f"  [DEBUG] Total loop time: {total_elapsed:.2f}s across {loop_iteration} iteration(s)")
-                    print(f"\nAgent (took {agent_duration:.2f}s): {answer}\n")
+                    
+                    # Beautiful markdown rendering instead of standard print
+                    print_agent_response(answer, agent_duration)
+                    
                     conversation_history.append({"role": "assistant", "content": answer})
                     db.save_message(current_session_id, "assistant", answer)
                     break 
